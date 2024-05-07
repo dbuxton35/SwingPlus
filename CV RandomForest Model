@@ -1,0 +1,279 @@
+#RANDOMFOREST MODEL CREATION CODE
+
+#Load Necessary Library
+library(ggplot2)
+library(tidyverse)
+library(caret)
+library(caTools)
+library(dplyr)
+library(randomForest)
+library(tree)
+library(Metrics)
+library(viridis)
+library(scales)
+library(lares)
+
+
+#PREPARE DATA FOR MODEL CREATION
+
+#Load in and Join Necessary Files, assigning xwOBAcon by Exit Speed and Launch Angle and Scale
+hittrax <- read.csv("hittrax.csv")
+poi_metrics <- read.csv("poi_metrics.csv")
+xwOBAcon <- read.csv("xwOBAcon.csv")
+batting <- merge(hittrax, poi_metrics)
+batting <- batting %>% 
+  mutate(floorExitSpeed = floor(exit_velo_mph_x),
+         floorLaunchAngle = trunc(la),) %>% 
+  filter(strike_zone < 10) %>%
+  left_join(xwOBAcon, by = c("floorExitSpeed" = "launch_speed", 
+                             "floorLaunchAngle" = "launch_angle"))
+
+
+#Filter by 'bat_min_x', a variable that shows batter handedness, filter for RHH
+batting <- subset(batting, bat_min_x > -30)
+
+hist(batting$pitch_angle)
+mean(batting$pitch_angle)
+
+#Select variables to train the model
+batting <- select(batting, c('av_xwOBAcon',
+                             'sweet_spot_velo_mph_contact_x',
+                             'attack_angle_contact_x',
+                             'bat_torso_angle_connection_x', 
+                             'bat_torso_angle_ds_x',
+                             'bat_torso_angle_ds_y',
+                             'bat_torso_angle_ds_z', 
+                             'hand_speed_mag_max_x'))
+
+#Filter out any data with NA variables
+nrow(batting)
+batting <- na.omit(batting)
+nrow(batting)
+
+#Check Assumptions
+ncol(batting)
+names(batting)
+
+
+#Finding the highest correlations among variables to xwOBAcon????
+corr_var(batting, # name of dataset
+         av_xwOBAcon, # name of variable to focus on
+         top = 10 # display top 8 correlations
+)
+
+
+#Scale av_xwOBAcon to be on the scouts scale
+mean(batting$av_xwOBAcon)
+plot(batting$av_xwOBAcon)
+batting$av_xwOBAcon <- scale(batting$av_xwOBAcon)*10 + 50
+mean(batting$av_xwOBAcon)
+plot(batting$av_xwOBAcon)
+
+
+
+
+#Fitting a simple tree model
+hit_tree <- tree(av_xwOBAcon ~ ., data = batting)
+plot(hit_tree)
+text(hit_tree)
+cv_hit_tree <- cv.tree(hit_tree, K = 5)
+plot(cv_hit_tree)
+
+
+
+## Split the data so that we use 70% of it for training
+set.seed(123)
+training <- createDataPartition(y=batting$av_xwOBAcon, p=0.7, list=FALSE)
+training_set <- batting[training, ]
+testing_set <- batting[-training, ]
+
+
+#Select training columns
+spec_col <- c('sweet_spot_velo_mph_contact_x',
+              'attack_angle_contact_x',
+              
+              'bat_torso_angle_connection_x', 
+              'bat_torso_angle_ds_x',
+              'bat_torso_angle_ds_y', 
+              'bat_torso_angle_ds_z', 
+              'hand_speed_mag_max_x')
+
+
+
+
+
+#CREATING THE RANDOMFOREST MODEL
+
+
+#Create, View, and Save Cross Validated RF Model
+control <- trainControl(method="cv", number=10)
+set.seed(1)
+rf_batting <- train(av_xwOBAcon ~ ., data = training_set, method = "rf", trControl = control)
+saveRDS(rf_batting, "rf_batting.rds")
+print(rf_batting)
+
+
+#Test Error using naive mean av_xwOBAcon
+avg_av_xwOBAcon <- mean(training_set$av_xwOBAcon)
+naive_predictions <- data.frame(prediction = rep(avg_av_xwOBAcon, nrow(testing_set)))
+testing_set$naive_prediction <- naive_predictions$prediction
+rmse(testing_set$naive_prediction, testing_set$av_xwOBAcon)
+
+
+
+
+#CHECK MODEL TO FIND VARIABLES THAT CHANGE SIGNIFICANTLY SOLEY BASED ON THAT VARIABLE
+
+
+#Print mean and 25th/75th percentile for each variable
+mean(batting$sweet_spot_velo_mph_contact_x)
+quantile(batting$sweet_spot_velo_mph_contact_x, probs = c(0.25, 0.75), na.rm = TRUE)
+
+mean(batting$attack_angle_contact_x)
+quantile(batting$attack_angle_contact_x, probs = c(0.25, 0.75), na.rm = TRUE)
+
+mean(batting$bat_torso_angle_connection_x)
+quantile(batting$bat_torso_angle_connection_x, probs = c(0.25, 0.75), na.rm = TRUE)
+
+mean(batting$bat_torso_angle_ds_x)
+quantile(batting$bat_torso_angle_ds_x, probs = c(0.25, 0.75), na.rm = TRUE)
+
+mean(batting$bat_torso_angle_ds_y)
+quantile(batting$bat_torso_angle_ds_y, probs = c(0.25, 0.75), na.rm = TRUE)
+
+mean(batting$bat_torso_angle_ds_z)
+quantile(batting$bat_torso_angle_ds_z, probs = c(0.25, 0.75), na.rm = TRUE)
+
+mean(batting$hand_speed_mag_max_x)
+quantile(batting$hand_speed_mag_max_x, probs = c(0.25, 0.75), na.rm = TRUE)
+
+
+
+# Define a sequence of values for each variable
+sweet_spot_seq <- seq(60, 80, length.out = 100)
+attack_angle_seq <- seq(-10, 20, length.out = 100)
+bat_torso_seq <- seq(60, 120, length.out = 100)
+bat_torso_angle_ds_x_seq <- seq(-115, -90, length.out = 100)
+bat_torso_angle_ds_y_seq <- seq(100, 115, length.out = 100)
+bat_torso_angle_ds_z_seq <- seq(-65, 122, length.out = 100)
+hand_speed_mag_max_x_seq <- seq(1650, 1950, length.out = 100)
+
+
+# Create a new data frame for each variable
+newdata_sweet_spot <- data.frame(
+  sweet_spot_velo_mph_contact_x = sweet_spot_seq,
+  bat_torso_angle_connection_x = 90,
+  attack_angle_contact_x = 5,
+  bat_torso_angle_ds_x = -70.15874,
+  bat_torso_angle_ds_y = 107.7933,
+  bat_torso_angle_ds_z = 28.97045,
+  hand_speed_mag_max_x = 1816.63
+)
+
+newdata_bat_torso <- data.frame(
+  sweet_spot_velo_mph_contact_x = 70,
+  bat_torso_angle_connection_x = bat_torso_seq,
+  attack_angle_contact_x = 5,
+  bat_torso_angle_ds_x = -70.15874,
+  bat_torso_angle_ds_y = 107.7933,
+  bat_torso_angle_ds_z = 28.97045,
+  hand_speed_mag_max_x = 1816.63
+)
+
+newdata_attack_angle <- data.frame(
+  sweet_spot_velo_mph_contact_x = 70,
+  bat_torso_angle_connection_x = 90,
+  attack_angle_contact_x = attack_angle_seq,
+  bat_torso_angle_ds_x = -70.15874,
+  bat_torso_angle_ds_y = 107.7933,
+  bat_torso_angle_ds_z = 28.97045,
+  hand_speed_mag_max_x = 1816.63
+)
+
+newdata_bat_torso_angle_ds_x <- data.frame(
+  sweet_spot_velo_mph_contact_x = 70,
+  bat_torso_angle_connection_x = 90,
+  attack_angle_contact_x = 5,
+  bat_torso_angle_ds_x = bat_torso_angle_ds_x_seq,
+  bat_torso_angle_ds_y = 107.7933,
+  bat_torso_angle_ds_z = 28.97045,
+  hand_speed_mag_max_x = 1816.63
+)
+
+newdata_bat_torso_angle_ds_y <- data.frame(
+  sweet_spot_velo_mph_contact_x = 70,
+  bat_torso_angle_connection_x = 90,
+  attack_angle_contact_x = 5,
+  bat_torso_angle_ds_x = -70.15874,
+  bat_torso_angle_ds_y = bat_torso_angle_ds_y_seq,
+  bat_torso_angle_ds_z = 28.97045,
+  hand_speed_mag_max_x = 1816.63
+)
+
+newdata_bat_torso_angle_ds_z <- data.frame(
+  sweet_spot_velo_mph_contact_x = 70,
+  bat_torso_angle_connection_x = 90,
+  attack_angle_contact_x = 5,
+  bat_torso_angle_ds_x = -70.15874,
+  bat_torso_angle_ds_y = 107.7933,
+  bat_torso_angle_ds_z = bat_torso_angle_ds_z_seq,
+  hand_speed_mag_max_x = 1816.63
+)
+
+newdata_hand_speed_mag_max_x <- data.frame(
+  sweet_spot_velo_mph_contact_x = 70,
+  bat_torso_angle_connection_x = 90,
+  attack_angle_contact_x = 5,
+  bat_torso_angle_ds_x = -70.15874,
+  bat_torso_angle_ds_y = 107.7933,
+  bat_torso_angle_ds_z = 28.97045,
+  hand_speed_mag_max_x = hand_speed_mag_max_x_seq
+)
+
+
+
+
+
+# Predict xWOBAcon for each variable
+newdata_sweet_spot$av_xwOBAcon <- predict(rf_batting, newdata_sweet_spot)
+newdata_bat_torso$av_xwOBAcon <- predict(rf_batting, newdata_bat_torso)
+newdata_attack_angle$av_xwOBAcon <- predict(rf_batting, newdata_attack_angle)
+newdata_bat_torso_angle_ds_x$av_xwOBAcon <- predict(rf_batting, newdata_bat_torso_angle_ds_x)
+newdata_bat_torso_angle_ds_y$av_xwOBAcon <- predict(rf_batting, newdata_bat_torso_angle_ds_y)
+newdata_bat_torso_angle_ds_z$av_xwOBAcon <- predict(rf_batting, newdata_bat_torso_angle_ds_z)
+newdata_hand_speed_mag_max_x$av_xwOBAcon <- predict(rf_batting, newdata_hand_speed_mag_max_x)
+
+
+
+# Plot the results of change of only the specified variable
+ggplot(newdata_sweet_spot, aes(x = sweet_spot_velo_mph_contact_x, y = av_xwOBAcon)) +
+  geom_line() +
+  labs(title = "Sweet Spot Velo vs. xWOBA", x = "Sweet Spot Velo (MPH)", y = "xWOBA")
+
+ggplot(newdata_attack_angle, aes(x = attack_angle_contact_x, y = av_xwOBAcon)) +
+  geom_line() +
+  labs(title = "Attack Angle vs. xWOBA", x = "Attack Angle", y = "xWOBA")
+
+
+
+#Double check that no median variable will change the predicted xwOBAcon+ of the app drastically
+ggplot(newdata_bat_torso, aes(x = bat_torso_angle_connection_x, y = av_xwOBAcon)) +
+  geom_line() +
+  labs(title = "Bat/Torso Connection vs. xWOBA", x = "Bat/Torso Connection", y = "xWOBA")
+
+ggplot(newdata_bat_torso_angle_ds_x, aes(x = bat_torso_angle_ds_x, y = av_xwOBAcon)) +
+  geom_line() +
+  labs(title = "Bat Torso Angle Downswing X vs. xWOBA", x = "Bat Torso Angle Downswing X", y = "xWOBA")
+
+ggplot(newdata_bat_torso_angle_ds_y, aes(x = bat_torso_angle_ds_y, y = av_xwOBAcon)) +
+  geom_line() +
+  labs(title = "Bat Torso Angle Downswing Y vs. xWOBA", x = "Bat Torso Angle Downswing Y", y = "xWOBA")
+
+ggplot(newdata_bat_torso_angle_ds_z, aes(x = bat_torso_angle_ds_z, y = av_xwOBAcon)) +
+  geom_line() +
+  labs(title = "Bat Torso Angle Downswing Z vs. xWOBA", x = "Bat Torso Angle Downswing Z", y = "xWOBA")
+
+ggplot(newdata_hand_speed_mag_max_x, aes(x = hand_speed_mag_max_x, y = av_xwOBAcon)) +
+  geom_line() +
+  labs(title = "Hand Speed vs. xWOBA", x = "Hand Speed (MPH)", y = "xWOBA")
+
