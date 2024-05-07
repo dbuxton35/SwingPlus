@@ -1,0 +1,195 @@
+#MODEL RSHINY APP CODE
+
+#Load Necessary Libraries
+library(dplyr)
+library(randomForest)
+library(ggplot2)
+
+#Load in and Join Necessary Files, assigning xwOBAcon by Exit Speed and Launch Angle and Scale
+rf_batting <- readRDS("rf_batting.rds")
+hittrax <- read.csv("hittrax.csv")
+poi_metrics <- read.csv("poi_metrics.csv")
+xwOBAcon <- read.csv("xwOBAcon.csv")
+batting <- merge(hittrax, poi_metrics)
+batting <- batting %>% 
+  mutate(floorExitSpeed = floor(exit_velo_mph_x),
+         floorLaunchAngle = trunc(la)) %>% 
+  filter(strike_zone < 10) %>%
+  left_join(xwOBAcon, by = c("floorExitSpeed" = "launch_speed", 
+                             "floorLaunchAngle" = "launch_angle"))
+batting$av_xwOBAcon <- scale(batting$av_xwOBAcon)*10 + 50
+
+# Define UI
+ui <- fluidPage(
+  titlePanel("Random Forest Baseball Swing Model Prediction"),
+  
+  # Add Sidebar
+  sidebarLayout(
+    sidebarPanel(
+      tabsetPanel(
+        tabPanel("Inputs",
+                 sliderInput("sweet_spot_velo_mph_contact_x", 
+                             "Sweet Spot Velo (MPH):", 
+                             min = 60, max = 80, value = 70),
+                 
+                 sliderInput("attack_angle_contact_x", 
+                             "Attack Angle:", 
+                             min = -5, max = 15, value = 5),
+                 
+                 # Add this line to create a go button
+                 actionButton("goButton", "Go")
+        ),
+        tabPanel("Distribution",
+                 # Add this line to display the distPlot
+                 plotOutput("distPlot")
+        )
+      )
+    ),
+    
+    # Set up cards to display plots
+    mainPanel(
+      # Add this line to create a thin tile at the top of the mainPanel
+      fluidRow(
+        column(12,
+               wellPanel(
+                 uiOutput("prediction")
+               )
+        )
+      ),
+      fluidRow(
+        column(6, 
+               wellPanel(
+                 plotOutput("sweet_spot_plot")
+               )
+        ),
+        column(6, 
+               wellPanel(
+                 plotOutput("attack_angle_plot")
+               )
+        ),
+        fluidRow(
+          column(12, 
+                 wellPanel(
+                   plotOutput("scalePlot")
+                 )
+          )
+        )
+      )
+    )
+  )
+)
+
+
+
+
+
+
+
+# Define server logic
+server <- function(input, output) {
+  observeEvent(input$goButton, {
+    # Create a new data frame for prediction
+    newdata <- data.frame(
+      sweet_spot_velo_mph_contact_x = input$sweet_spot_velo_mph_contact_x,
+      attack_angle_contact_x = input$attack_angle_contact_x,
+      bat_torso_angle_connection_x = 107.5,
+      bat_torso_angle_ds_x = -105,
+      bat_torso_angle_ds_y = 110,
+      bat_torso_angle_ds_z = 35,
+      hand_speed_mag_max_x = 1800
+    )
+    
+    # Print prediction
+    pred <- predict(rf_batting, newdata)
+    
+    # Calculate percentile
+    percentile <- sum(batting$av_xwOBAcon <= pred) / length(batting$av_xwOBAcon)
+    
+    # Print prediction and percentile
+    output$prediction <- renderUI({
+      HTML(paste0("<b><span style='font-size:40px'>Predicted xwOBAcon+: ", round(pred, 3)))
+    })
+    
+    
+    # Plot distribution and add prediction from inputs
+    output$distPlot <- renderPlot({
+      
+      # Calculate density
+      density_data <- density(batting$av_xwOBAcon)
+      df_density <- data.frame(x = density_data$x, y = density_data$y)
+      
+      # Create the plot
+      ggplot(df_density, aes(x = x, y = y)) +
+        geom_area(fill = "grey", alpha = 0.4) + # replace "desired_color" with your color
+        geom_vline(aes(xintercept = pred), color = "blue", linetype = "dashed") +
+        annotate("text", x = pred, y = 0, label = paste("Prediction:", round(pred, 3), "\nPercentile:", round(percentile*100)), vjust = -1) +
+        labs(title = "Distribution of xwOBAcon+", x = "xwOBAcon+", y = 'Density')
+    })
+    
+    
+    
+    # Create scale plot
+    output$scalePlot <- renderPlot({
+      # Create a data frame for the scale
+      scale_data <- data.frame(x = seq(35, 65, length.out = 1000), y = 1)
+      
+      # Calculate color gradient
+      scale_data$color <- scales::gradient_n_pal(c('dodgerblue2', 'white', 'firebrick1'))((scale_data$x - min(scale_data$x)) / diff(range(scale_data$x)))
+      
+      # Create the plot
+      ggplot(scale_data, aes(x = x, y = y, fill = color)) +
+        geom_tile(color = NA) +
+        scale_fill_identity() +
+        geom_segment(aes(x = pred, xend = pred, y = 0, yend = 2), color = "black") +
+        theme_void() +
+        theme(axis.title.x = element_text(), axis.text.x = element_text()) +
+        labs(title = "Prediction on Scale", x = "xwOBAcon+") +
+        scale_x_continuous(breaks = seq(min(scale_data$x), max(scale_data$x), length.out = 5))
+    })
+    
+    
+    # Plot Sweet Spot Velo
+    output$sweet_spot_plot <- renderPlot({
+      newdata_sweet_spot <- data.frame(
+        sweet_spot_velo_mph_contact_x = seq(60, 80, length.out = 100),
+        bat_torso_angle_connection_x = rep(107.5, 100),
+        attack_angle_contact_x = rep(input$attack_angle_contact_x, 100),
+        bat_torso_angle_ds_x = rep(-105, 100),
+        bat_torso_angle_ds_y = rep(110, 100),
+        bat_torso_angle_ds_z = rep(35, 100),
+        hand_speed_mag_max_x = rep(1800, 100)
+      )
+      newdata_sweet_spot$av_xwOBAcon <- predict(rf_batting, newdata_sweet_spot)
+      ggplot(newdata_sweet_spot, aes(x = sweet_spot_velo_mph_contact_x, y = av_xwOBAcon)) +
+        geom_line() +
+        geom_segment(aes(x = input$sweet_spot_velo_mph_contact_x, xend = input$sweet_spot_velo_mph_contact_x, y = pred - 0.1, yend = pred - 0.04), arrow = arrow(length = unit(1, "cm"), ends = "last"), color = "red") +
+        ylim(35, 65) +
+        labs(title = "Sweet Spot Velo vs. xwOBAcon+", x = "Sweet Spot Velo (MPH)", y = "xwOBAcon+")
+    })
+    
+    
+    # Plot Attack Angle
+    output$attack_angle_plot <- renderPlot({
+      newdata_attack_angle <- data.frame(
+        sweet_spot_velo_mph_contact_x = rep(input$sweet_spot_velo_mph_contact_x, 100),
+        bat_torso_angle_connection_x = rep(107.5, 100),
+        attack_angle_contact_x = seq(-10, 20, length.out = 100),
+        bat_torso_angle_ds_x = rep(-105, 100),
+        bat_torso_angle_ds_y = rep(110, 100),
+        bat_torso_angle_ds_z = rep(35, 100),
+        hand_speed_mag_max_x = rep(1800, 100)
+      )
+      newdata_attack_angle$av_xwOBAcon <- predict(rf_batting, newdata_attack_angle)
+      ggplot(newdata_attack_angle, aes(x = attack_angle_contact_x, y = av_xwOBAcon)) +
+        geom_line() +
+        geom_segment(aes(x = input$attack_angle_contact_x, xend = input$attack_angle_contact_x, y = pred - 0.1, yend = pred - 0.02), arrow = arrow(length = unit(1, "cm"), ends = "last"), color = "red") +
+        ylim(35, 65) +
+        labs(title = "Attack Angle vs. xwOBAcon+", x = "Attack Angle", y = "xwOBAcon+")
+    })
+    
+
+  })
+}
+
+# Run the application 
+shinyApp(ui = ui, server = server)
